@@ -135,12 +135,16 @@ class MessengerServer:
             except:
                 pass
 
-    def get_user_ip(self, username):
-        """Получение IP пользователя"""
-        return self.user_data.get(username, {}).get('ip', 'Неизвестно')
+    def get_user_local_ip(self, username):
+        """Получение локального IP пользователя"""
+        return self.user_data.get(username, {}).get('local_ip', 'Неизвестно')
+
+    def get_user_server_ip(self, username):
+        """Получение серверного IP пользователя"""
+        return self.user_data.get(username, {}).get('server_ip', 'Неизвестно')
 
     def handle_client(self, client_socket, address):
-        user_ip = address[0]
+        user_ip = address[0]  # Серверный IP (который видит сервер)
         username = None
 
         try:
@@ -154,12 +158,22 @@ class MessengerServer:
 
                 if msg_type == 'register':
                     username = message['username']
+                    local_ip = message.get('local_ip', 'Неизвестно')  # Локальный IP от клиента
+                    
                     self.clients[username] = client_socket
                     self.user_data[username] = {
-                        'ip': user_ip,
+                        'local_ip': local_ip,      # Локальный IP компьютера
+                        'server_ip': user_ip,      # Серверный IP (который видит сервер)
                         'last_seen': datetime.now().isoformat()
                     }
-                    self.logger.info(f"Пользователь {username} зарегистрирован с IP {user_ip}")
+                    self.logger.info(f"Пользователь {username} зарегистрирован с локальным IP {local_ip} и серверным IP {user_ip}")
+
+                    # Отправляем клиенту его серверный IP
+                    server_ip_msg = {
+                        'type': 'server_ip_assigned',
+                        'server_ip': user_ip
+                    }
+                    client_socket.send(json.dumps(server_ip_msg).encode('utf-8'))
 
                     # Сохраняем данные после регистрации нового пользователя
                     self.save_data()
@@ -172,6 +186,8 @@ class MessengerServer:
                     to_user = message['to']
                     text = message['text']
                     timestamp = datetime.now().isoformat()
+                    local_ip = message.get('local_ip', self.get_user_local_ip(from_user))
+                    server_ip = message.get('server_ip', self.get_user_server_ip(from_user))
 
                     chat_id = tuple(sorted([from_user, to_user]))
                     if chat_id not in self.private_chats:
@@ -179,7 +195,8 @@ class MessengerServer:
 
                     msg_data = {
                         'from': from_user,
-                        'from_ip': self.get_user_ip(from_user),
+                        'local_ip': local_ip,
+                        'server_ip': server_ip,
                         'text': text,
                         'timestamp': timestamp
                     }
@@ -192,7 +209,8 @@ class MessengerServer:
                         forward_msg = {
                             'type': 'private_message',
                             'from': from_user,
-                            'from_ip': self.get_user_ip(from_user),
+                            'local_ip': local_ip,
+                            'server_ip': server_ip,
                             'text': text,
                             'timestamp': timestamp
                         }
@@ -221,11 +239,14 @@ class MessengerServer:
                     group_name = message['group']
                     text = message['text']
                     timestamp = datetime.now().isoformat()
+                    local_ip = message.get('local_ip', self.get_user_local_ip(from_user))
+                    server_ip = message.get('server_ip', self.get_user_server_ip(from_user))
 
                     if group_name in self.group_chats and from_user in self.group_chats[group_name]['members']:
                         msg_data = {
                             'from': from_user,
-                            'from_ip': self.get_user_ip(from_user),
+                            'local_ip': local_ip,
+                            'server_ip': server_ip,
                             'text': text,
                             'timestamp': timestamp
                         }
@@ -239,7 +260,8 @@ class MessengerServer:
                                 forward_msg = {
                                     'type': 'group_message',
                                     'from': from_user,
-                                    'from_ip': self.get_user_ip(from_user),
+                                    'local_ip': local_ip,
+                                    'server_ip': server_ip,
                                     'group': group_name,
                                     'text': text,
                                     'timestamp': timestamp
@@ -319,27 +341,17 @@ class MessengerServer:
 
                     if group_name in self.group_chats and username in self.group_chats[group_name]['members']:
                         members = self.group_chats[group_name]['members']
-                        # Создаем список участников с их реальными IP-адресами
+                        # Создаем список участников с их IP-адресами
                         members_with_ip = []
                         for member in members:
-                            # Получаем реальный IP пользователя из данных подключения, если онлайн
-                            member_ip = 'Неизвестно'
-                            if member in self.clients:
-                                # Получаем реальный IP из сокета
-                                try:
-                                    member_socket = self.clients[member]
-                                    member_address = member_socket.getpeername()
-                                    member_ip = member_address[0]
-                                except:
-                                    # Если не удалось получить реальный IP, используем сохраненный
-                                    member_ip = self.get_user_ip(member)
-                            else:
-                                # Если пользователь оффлайн, используем сохраненный IP
-                                member_ip = self.get_user_ip(member)
+                            # Получаем оба IP пользователя
+                            member_local_ip = self.get_user_local_ip(member)
+                            member_server_ip = self.get_user_server_ip(member)
                             
                             members_with_ip.append({
                                 'username': member,
-                                'ip': member_ip
+                                'local_ip': member_local_ip,
+                                'server_ip': member_server_ip
                             })
                         
                         response = {
@@ -426,7 +438,8 @@ class MessengerServer:
                 other_user = chat_id[0] if chat_id[1] == username else chat_id[1]
                 user_chats['private_chats'].append({
                     'user': other_user,
-                    'user_ip': self.get_user_ip(other_user),
+                    'local_ip': self.get_user_local_ip(other_user),
+                    'server_ip': self.get_user_server_ip(other_user),
                     'last_message': messages[-1] if messages else None
                 })
 

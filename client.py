@@ -13,12 +13,14 @@ class MessengerClient:
         self.socket = None
         self.username = None
         self.user_ip = self.get_local_ip()
+        self.server_ip = None  # IP, который видит сервер
         self.private_chats = {}  # chat_display_name -> username
         self.group_chats = {}  # chat_display_name -> group_name
         self.chat_history = {}  # chat_id -> list of messages (локальное хранение)
         self.pending_messages = {}  # message_id -> message data
         self.group_creators = {}  # group_name -> creator
-        self.user_ips = {}  # username -> IP mapping
+        self.user_ips = {}  # username -> IP mapping (локальные IP)
+        self.user_server_ips = {}  # username -> серверные IP
         self.group_members = {}  # group_name -> list of members with IPs
         self.pending_member_requests = set()  # group_name для которых запрошены участники
 
@@ -304,14 +306,15 @@ class MessengerClient:
                     member_frame.pack(fill=tk.X, padx=5, pady=2)
 
                     username = member_info['username']
-                    user_ip = member_info['ip']
+                    user_local_ip = member_info['local_ip']
+                    user_server_ip = member_info['server_ip']
                     
                     # Цвет создателя группы
                     is_creator = username == self.group_creators.get(group_name)
                     creator_color = self.colors['warning'] if is_creator else self.colors['dark']
                     
                     # Информация о пользователе
-                    user_info = f"{username} (IP: {user_ip})"
+                    user_info = f"{username} (локальный: {user_local_ip}, серверный: {user_server_ip})"
                     if is_creator:
                         user_info += " - создатель"
                     
@@ -395,8 +398,9 @@ class MessengerClient:
         if chat_type == 'private':
             self.current_chat_type = 'private'
             self.current_chat_id = chat_data
-            user_ip = self.user_ips.get(chat_data, 'Неизвестно')
-            self.chat_title.config(text=f"Личный чат с {chat_data} (IP: {user_ip})")
+            user_local_ip = self.user_ips.get(chat_data, 'Неизвестно')
+            user_server_ip = self.user_server_ips.get(chat_data, 'Неизвестно')
+            self.chat_title.config(text=f"Личный чат с {chat_data} (локальный: {user_local_ip}, серверный: {user_server_ip})")
             # Для личных чатов используем локальную историю
             self.display_local_chat_history(chat_data)
         else:
@@ -417,14 +421,11 @@ class MessengerClient:
             for msg in history:
                 timestamp = datetime.fromisoformat(msg['timestamp']).strftime("%H:%M")
                 sender = msg['from']
-                server_ip = msg.get('from_ip', 'Неизвестно')
+                local_ip = msg.get('local_ip', 'Неизвестно')
+                server_ip = msg.get('server_ip', 'Неизвестно')
 
-                if sender == self.username:
-                    # Для своих сообщений показываем оба IP
-                    ip_info = f"локальный: {self.user_ip}, серверный: {server_ip}"
-                else:
-                    # Для чужих сообщений показываем только серверный IP
-                    ip_info = f"серверный: {server_ip}"
+                # Для всех сообщений показываем оба IP
+                ip_info = f"локальный: {local_ip}, серверный: {server_ip}"
 
                 self.chat_area.insert(tk.END, f"[{timestamp}] {sender} ({ip_info}): {msg['text']}\n")
         else:
@@ -530,7 +531,8 @@ class MessengerClient:
             self.username = username
             register_msg = {
                 'type': 'register',
-                'username': username
+                'username': username,
+                'local_ip': self.user_ip  # Отправляем локальный IP
             }
             try:
                 self.socket.send(json.dumps(register_msg).encode('utf-8'))
@@ -550,8 +552,8 @@ class MessengerClient:
         """Получение серверного IP пользователя"""
         # В реальном приложении сервер должен отправлять IP пользователя
         # Для демонстрации используем локальный IP
-        server_ip = self.user_ip  # В реальности это должен быть IP, который видит сервер
-        self.user_label.config(text=f"{self.username} (локальный: {self.user_ip}, серверный: {server_ip})")
+        self.server_ip = self.user_ip  # В реальности это должен быть IP, который видит сервер
+        self.user_label.config(text=f"{self.username} (локальный: {self.user_ip}, серверный: {self.server_ip})")
 
     def show_add_menu(self):
         menu = tk.Menu(self.root, tearoff=0, bg=self.colors['light'], fg=self.colors['dark'])
@@ -629,14 +631,11 @@ class MessengerClient:
             for msg in history:
                 timestamp = datetime.fromisoformat(msg['timestamp']).strftime("%H:%M")
                 sender = msg['from']
-                server_ip = msg.get('from_ip', 'Неизвестно')
+                local_ip = msg.get('local_ip', 'Неизвестно')
+                server_ip = msg.get('server_ip', 'Неизвестно')
 
-                if sender == self.username:
-                    # Для своих сообщений показываем оба IP
-                    ip_info = f"локальный: {self.user_ip}, серверный: {server_ip}"
-                else:
-                    # Для чужих сообщений показываем только серверный IP
-                    ip_info = f"серверный: {server_ip}"
+                # Для всех сообщений показываем оба IP
+                ip_info = f"локальный: {local_ip}, серверный: {server_ip}"
 
                 self.chat_area.insert(tk.END, f"[{timestamp}] {sender} ({ip_info}): {msg['text']}\n")
         else:
@@ -669,7 +668,9 @@ class MessengerClient:
                 'from': self.username,
                 'to': target_user,
                 'text': message_text,
-                'message_id': message_id
+                'message_id': message_id,
+                'local_ip': self.user_ip,
+                'server_ip': self.server_ip
             }
 
             # Сохраняем сообщение в локальной истории
@@ -679,7 +680,8 @@ class MessengerClient:
 
             msg_data = {
                 'from': self.username,
-                'from_ip': self.user_ip,
+                'local_ip': self.user_ip,
+                'server_ip': self.server_ip,
                 'text': message_text,
                 'timestamp': datetime.now().isoformat()
             }
@@ -688,7 +690,7 @@ class MessengerClient:
             # Если чат открыт, сразу отображаем сообщение
             if (self.current_chat_type == 'private' and
                     self.current_chat_id == target_user):
-                self.display_message(self.username, self.user_ip, message_text)
+                self.display_message(self.username, self.user_ip, self.server_ip, message_text)
 
         else:
             # Групповое сообщение
@@ -699,7 +701,9 @@ class MessengerClient:
                     'from': self.username,
                     'group': group_name,
                     'text': message_text,
-                    'message_id': message_id
+                    'message_id': message_id,
+                    'local_ip': self.user_ip,
+                    'server_ip': self.server_ip
                 }
             else:
                 messagebox.showerror("Ошибка", "Группа не найдена")
@@ -719,20 +723,15 @@ class MessengerClient:
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось отправить сообщение: {e}")
 
-    def display_message(self, sender, server_ip, text, timestamp=None):
+    def display_message(self, sender, local_ip, server_ip, text, timestamp=None):
         """Отображение нового сообщения"""
         if timestamp is None:
             timestamp = datetime.now().isoformat()
 
         time_str = datetime.fromisoformat(timestamp).strftime("%H:%M")
 
-        # Определяем IP для отображения
-        if sender == self.username:
-            # Для своих сообщений показываем оба IP
-            ip_info = f"локальный: {self.user_ip}, серверный: {server_ip}"
-        else:
-            # Для чужих сообщений показываем только серверный IP
-            ip_info = f"серверный: {server_ip}"
+        # Для всех сообщений показываем оба IP
+        ip_info = f"локальный: {local_ip}, серверный: {server_ip}"
 
         self.chat_area.config(state=tk.NORMAL)
         self.chat_area.insert(tk.END, f"[{time_str}] {sender} ({ip_info}): {text}\n")
@@ -751,12 +750,14 @@ class MessengerClient:
 
                 if msg_type == 'private_message':
                     sender = message['from']
-                    sender_ip = message.get('from_ip', 'Неизвестно')
+                    local_ip = message.get('local_ip', 'Неизвестно')
+                    server_ip = message.get('server_ip', 'Неизвестно')
                     text = message['text']
                     timestamp = message.get('timestamp')
 
                     # Сохраняем IP отправителя
-                    self.user_ips[sender] = sender_ip
+                    self.user_ips[sender] = local_ip
+                    self.user_server_ips[sender] = server_ip
 
                     # Сохраняем сообщение в локальной истории
                     chat_key = f"private_{sender}"
@@ -765,7 +766,8 @@ class MessengerClient:
 
                     msg_data = {
                         'from': sender,
-                        'from_ip': sender_ip,
+                        'local_ip': local_ip,
+                        'server_ip': server_ip,
                         'text': text,
                         'timestamp': timestamp
                     }
@@ -782,22 +784,27 @@ class MessengerClient:
                     if (self.current_chat_type == 'private' and
                             self.current_chat_id == sender):
                         # Если чат открыт, сразу отображаем сообщение
-                        self.display_message(sender, sender_ip, text, timestamp)
+                        self.display_message(sender, local_ip, server_ip, text, timestamp)
                     else:
                         # Уведомление о новом сообщении
                         self.status_var.set(f"Новое сообщение от {sender}")
 
                 elif msg_type == 'group_message':
                     sender = message['from']
-                    sender_ip = message.get('from_ip', 'Неизвестно')
+                    local_ip = message.get('local_ip', 'Неизвестно')
+                    server_ip = message.get('server_ip', 'Неизвестно')
                     group_name = message['group']
                     text = message['text']
                     timestamp = message.get('timestamp')
 
+                    # Сохраняем IP отправителя
+                    self.user_ips[sender] = local_ip
+                    self.user_server_ips[sender] = server_ip
+
                     # Проверяем, открыта ли сейчас эта группа
                     if (self.current_chat_type == 'group' and
                             self.current_chat_id == group_name):
-                        self.display_message(sender, sender_ip, text, timestamp)
+                        self.display_message(sender, local_ip, server_ip, text, timestamp)
                     else:
                         # Уведомление о новом сообщении в группе
                         self.status_var.set(f"Новое сообщение в {group_name} от {sender}")
@@ -863,6 +870,11 @@ class MessengerClient:
                     
                     self.status_var.set(f"Получен список участников группы {group_name}")
 
+                elif msg_type == 'server_ip_assigned':
+                    # Получение серверного IP от сервера
+                    self.server_ip = message['server_ip']
+                    self.user_label.config(text=f"{self.username} (локальный: {self.user_ip}, серверный: {self.server_ip})")
+
             except Exception as e:
                 self.status_var.set(f"Ошибка получения сообщения: {e}")
                 break
@@ -883,7 +895,8 @@ class MessengerClient:
             self.create_chat_widget(chat_name, 'private', chat['user'])
             self.private_chats[chat_name] = chat['user']
             # Сохраняем IP пользователя
-            self.user_ips[chat['user']] = chat.get('user_ip', 'Неизвестно')
+            self.user_ips[chat['user']] = chat.get('local_ip', 'Неизвестно')
+            self.user_server_ips[chat['user']] = chat.get('server_ip', 'Неизвестно')
 
         # Добавляем групповые чаты
         for chat in message.get('group_chats', []):
@@ -900,8 +913,9 @@ class MessengerClient:
             self.deselect_chat()
         # Если текущий чат все еще существует, обновляем заголовок
         elif self.current_chat_type == 'private' and self.current_chat in self.private_chats:
-            user_ip = self.user_ips.get(self.current_chat_id, 'Неизвестно')
-            self.chat_title.config(text=f"Личный чат с {self.current_chat_id} (IP: {user_ip})")
+            user_local_ip = self.user_ips.get(self.current_chat_id, 'Неизвестно')
+            user_server_ip = self.user_server_ips.get(self.current_chat_id, 'Неизвестно')
+            self.chat_title.config(text=f"Личный чат с {self.current_chat_id} (локальный: {user_local_ip}, серверный: {user_server_ip})")
 
     def exit_app(self):
         """Выход из приложения"""
